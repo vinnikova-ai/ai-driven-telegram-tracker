@@ -62,7 +62,7 @@ def create_dispatcher(webapp_url: str) -> Dispatcher:
                 [
                     InlineKeyboardButton(
                         text="Открыть трекер",
-                                    web_app=WebAppInfo(url="https://telegram-habit-tracker--evgmust88.replit.app"),
+                                    web_app=WebAppInfo(url="https://vinnikova-arc-bot.pages.dev"),
 
                     )
                 ]
