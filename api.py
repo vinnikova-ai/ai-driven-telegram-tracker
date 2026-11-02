@@ -201,8 +201,8 @@ async def home():
     return {"status": "ok", "message": "Habit Tracker API is running"}
 
 
-@app.get("/api/health")
-@app.get("/api/healthz")
+@app.api_route("/api/health", methods=["GET", "HEAD"])
+@app.api_route("/api/healthz", methods=["GET", "HEAD"])
 async def health() -> dict:
     return {"status": "ok"}
 
