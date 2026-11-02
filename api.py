@@ -193,7 +193,7 @@ def serialize_report(report: WeeklyReport | None) -> dict | None:
     }
 
 
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 async def home():
     index_path = os.path.join(ROOT, "templates", "index.html")
     if os.path.exists(index_path):
