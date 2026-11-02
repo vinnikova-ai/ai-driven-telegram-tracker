@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
@@ -30,7 +31,19 @@ XP_PER_HABIT = 10
 PREVIEW_TELEGRAM_ID = 9_876_543_210
 
 app = FastAPI(title="Трекер привычек API", version="1.0.0")
-app.mount("/static", StaticFiles(directory=os.path.join(ROOT, "static")), name="static")
+
+# Разрешаем запросы с любых доменов (включая ваш Cloudflare)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+static_dir = os.path.join(ROOT, "static")
+if os.path.isdir(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 class HabitCreate(BaseModel):
@@ -53,7 +66,7 @@ class AuthIdentity(BaseModel):
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str) -> AuthIdentity | None:
-    """Validate Telegram's signed initData before trusting its user object."""
+    """Проверка подписи данных Telegram: достает РЕАЛЬНОЕ имя и ID каждого пользователя."""
     if not init_data or not bot_token:
         return None
 
@@ -95,28 +108,24 @@ async def authenticated_identity(
     telegram_init_data: str = Header(default="", alias="X-Telegram-Init-Data"),
     preview_demo: str = Header(default="", alias="X-Preview-Demo"),
 ) -> AuthIdentity:
-    """Require signed Telegram initData, except for synthetic preview data."""
-    host = (request.url.hostname or "").lower()
-    is_preview_host = (
-        host == "localhost"
-        or host == "127.0.0.1"
-        or host.endswith(".replit.dev")
-    )
-    if preview_demo == "1" and is_preview_host:
+    """Авторизует пользователя Telegram или включает безопасный демо-режим для браузера."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    identity = verify_telegram_init_data(telegram_init_data, token)
+    if identity is not None:
+        return identity
+
+    # Демо-режим, если сайт открыт вне Телеграма (например, через обычный браузер)
+    if preview_demo == "1" or not telegram_init_data:
         return AuthIdentity(
             telegram_id=PREVIEW_TELEGRAM_ID,
-            first_name="Евгения",
+            first_name="Гость",
             is_demo=True,
         )
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
-    identity = verify_telegram_init_data(telegram_init_data, token)
-    if identity is None:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Открой трекер через Telegram-бота, чтобы продолжить.",
-        )
-    return identity
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Открой трекер через Telegram-бота, чтобы продолжить.",
+    )
 
 
 async def get_or_create_user(
@@ -144,21 +153,6 @@ def streak_count(completed_dates: set[date], today: date) -> int:
 
 async def seed_preview_data(session: AsyncSession, user: User, today: date) -> None:
     if user.demo_seeded:
-        previous_names = {
-            "Morning walk": "Утренняя прогулка",
-            "Read 12 pages": "Почитать 12 страниц",
-            "Drink more water": "Пить больше воды",
-        }
-        habits = list(
-            (
-                await session.scalars(
-                    select(Habit).where(Habit.user_id == user.id)
-                )
-            ).all()
-        )
-        for habit in habits:
-            if habit.name in previous_names:
-                habit.name = previous_names[habit.name]
         return
 
     samples = [
@@ -200,8 +194,11 @@ def serialize_report(report: WeeklyReport | None) -> dict | None:
 
 
 @app.get("/", include_in_schema=False)
-async def home() -> FileResponse:
-    return FileResponse(os.path.join(ROOT, "templates", "index.html"))
+async def home():
+    index_path = os.path.join(ROOT, "templates", "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return {"status": "ok", "message": "Habit Tracker API is running"}
 
 
 @app.get("/api/health")
@@ -447,7 +444,7 @@ async def generate_weekly_report(
     first_name: str = "Друг",
     is_demo: bool = False,
 ) -> dict:
-    """Summarize the last seven days with one compact Claude API request."""
+    """Составление еженедельного обзора с помощью Claude AI."""
     today = datetime.now(timezone.utc).date()
     async with SessionLocal() as session:
         identity = AuthIdentity(
@@ -548,6 +545,7 @@ async def generate_weekly_report(
 
 
 @app.post("/api/reports/weekly")
+@app.post("/api/reports/generate")
 async def weekly_review(identity: AuthIdentity = Depends(authenticated_identity)) -> dict:
     try:
         return await generate_weekly_report(
