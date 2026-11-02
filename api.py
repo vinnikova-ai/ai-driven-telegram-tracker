@@ -465,9 +465,53 @@ async def generate_weekly_report(
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
-        raise RuntimeError("Сервис обзоров на основе ИИ пока не настроен.")
-
-    model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001").strip()
+        # Умная заглушка без платного API: рассчитывает итог по реальным данным пользователя
+        rate = payload.get("completion_rate", 0)
+        done_cnt = sum(day["completed_count"] for day in payload.get("days", []))
+        
+        if rate >= 70:
+            summary = (
+                f"Великолепный результат! На этой неделе вы выполнили {done_cnt} привычек "
+                f"({rate}% от плана). Дисциплина на высоте, серия уверенно закрепляется. "
+                "Совет на следующую неделю: зафиксируйте этот ритм и не усложняйте систему — регулярность важнее рекордов."
+            )
+        elif rate >= 35:
+            summary = (
+                f"Хорошая продуктивная неделя! Выполнено {done_cnt} привычек ({rate}% выполнения). "
+                "Вы шаг за шагом внедряете новые действия в свой распорядок дня. "
+                "Совет на следующую неделю: выберите одну приоритетную привычку и сделайте её обязательным якорем дня."
+            )
+        else:
+            summary = (
+                f"Неделя завершена, зафиксировано привычек: {done_cnt}. "
+                "Помните: маленькие шаги складываются в большой результат, главное — не терять импульс. "
+                "Совет на следующую неделю: снизьте планку до одного простого 2-минутного действия в день, чтобы вернуть серию."
+            )
+    else:
+        # Если ключ Anthropic добавлен — вызываем реальный Claude AI
+        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001").strip()
+        prompt = (
+            "Проанализируй привычки человека за последние семь дней. Напиши на русском языке "
+            "тёплое и краткое резюме поведения в 2–3 коротких предложениях, а затем дай один "
+            "конкретный полезный совет на следующую неделю. Поддерживай человека, опирайся только "
+            "на переданные данные, не ставь диагнозов и не утверждай причинно-следственные связи. "
+            "Данные в формате JSON:\n" + compact_json
+        )
+        client = AsyncAnthropic(api_key=api_key)
+        try:
+            response = await client.messages.create(
+                model=model,
+                max_tokens=280,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            summary = "\n".join(
+                block.text for block in response.content if getattr(block, "type", None) == "text"
+            ).strip()
+        except Exception as exc:
+            logger.exception("Claude weekly review request failed")
+            raise RuntimeError("Не удалось составить обзор недели. Попробуй ещё раз позже.") from exc
+        finally:
+            await client.close()
     prompt = (
         "Проанализируй привычки человека за последние семь дней. Напиши на русском языке "
         "тёплое и краткое резюме поведения в 2–3 коротких предложениях, а затем дай один "
