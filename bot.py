@@ -50,20 +50,15 @@ def create_dispatcher(webapp_url: str) -> Dispatcher:
             return
 
         await save_telegram_user(message.from_user.id, message.from_user.first_name)
-        if not webapp_url:
-            await message.answer(
-                "Приложение пока не настроено. Добавьте его публичный HTTPS-адрес, "
-                "чтобы появилась кнопка «Открыть трекер»."
-            )
-            return
+        
+        target_url = webapp_url or "https://vinnikova-arc-bot.pages.dev"
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
                         text="Открыть трекер",
-                                    web_app=WebAppInfo(url="https://vinnikova-arc-bot.pages.dev"),
-
+                        web_app=WebAppInfo(url=target_url),
                     )
                 ]
             ]
