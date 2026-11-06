@@ -444,7 +444,7 @@ async def generate_weekly_report(
     first_name: str = "Друг",
     is_demo: bool = False,
 ) -> dict:
-    """Составление еженедельного обзора с помощью Claude AI."""
+    """Составление еженедельного обзора с умной заглушкой и поддержкой Claude AI."""
     today = datetime.now(timezone.utc).date()
     async with SessionLocal() as session:
         identity = AuthIdentity(
@@ -463,33 +463,12 @@ async def generate_weekly_report(
         user_id = user.id
         await session.commit()
 
+    summary = None
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-    if not api_key:
-        # Умная заглушка без платного API: рассчитывает итог по реальным данным пользователя
-        rate = payload.get("completion_rate", 0)
-        done_cnt = sum(day["completed_count"] for day in payload.get("days", []))
-        
-        if rate >= 70:
-            summary = (
-                f"Великолепный результат! На этой неделе вы выполнили {done_cnt} привычек "
-                f"({rate}% от плана). Дисциплина на высоте, серия уверенно закрепляется. "
-                "Совет на следующую неделю: зафиксируйте этот ритм и не усложняйте систему — регулярность важнее рекордов."
-            )
-        elif rate >= 35:
-            summary = (
-                f"Хорошая продуктивная неделя! Выполнено {done_cnt} привычек ({rate}% выполнения). "
-                "Вы шаг за шагом внедряете новые действия в свой распорядок дня. "
-                "Совет на следующую неделю: выберите одну приоритетную привычку и сделайте её обязательным якорем дня."
-            )
-        else:
-            summary = (
-                f"Неделя завершена, зафиксировано привычек: {done_cnt}. "
-                "Помните: маленькие шаги складываются в большой результат, главное — не терять импульс. "
-                "Совет на следующую неделю: снизьте планку до одного простого 2-минутного действия в день, чтобы вернуть серию."
-            )
-    else:
-        # Если ключ Anthropic добавлен — вызываем реальный Claude AI
-        model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001").strip()
+
+    # 1. Если есть ключ Claude — пробуем сгенерировать через нейросеть
+    if api_key:
+        model = os.getenv("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022").strip()
         prompt = (
             "Проанализируй привычки человека за последние семь дней. Напиши на русском языке "
             "тёплое и краткое резюме поведения в 2–3 коротких предложениях, а затем дай один "
@@ -508,35 +487,36 @@ async def generate_weekly_report(
                 block.text for block in response.content if getattr(block, "type", None) == "text"
             ).strip()
         except Exception as exc:
-            logger.exception("Claude weekly review request failed")
-            raise RuntimeError("Не удалось составить обзор недели. Попробуй ещё раз позже.") from exc
+            logger.warning("Claude API error, falling back to smart template: %s", exc)
         finally:
             await client.close()
-    prompt = (
-        "Проанализируй привычки человека за последние семь дней. Напиши на русском языке "
-        "тёплое и краткое резюме поведения в 2–3 коротких предложениях, а затем дай один "
-        "конкретный полезный совет на следующую неделю. Поддерживай человека, опирайся только "
-        "на переданные данные, не ставь диагнозов и не утверждай причинно-следственные связи. "
-        "Данные в формате JSON:\n" + compact_json
-    )
-    client = AsyncAnthropic(api_key=api_key)
-    try:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=280,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as exc:
-        logger.exception("Claude weekly review request failed")
-        raise RuntimeError("Не удалось составить обзор недели. Попробуй ещё раз позже.") from exc
-    finally:
-        await client.close()
 
-    summary = "\n".join(
-        block.text for block in response.content if getattr(block, "type", None) == "text"
-    ).strip()
+    # 2. Умная заглушка (если ключа нет или запрос к Claude упал)
     if not summary:
-        raise RuntimeError("Обзор получился пустым. Попробуй ещё раз позже.")
+        rate = payload.get("completion_rate", 0)
+        done_cnt = sum(day["completed_count"] for day in payload.get("days", []))
+        habits = payload.get("habits", [])
+        best_habit = max(habits, key=lambda h: h.get("completed_days", 0), default=None) if habits else None
+        best_name = f" «{best_habit['name']}»" if best_habit and best_habit.get("completed_days", 0) > 0 else ""
+
+        if rate >= 70:
+            summary = (
+                f"Великолепный результат! На этой неделе вы выполнили {done_cnt} привычек "
+                f"({rate}% от плана). Особенно здорово закрепляется{best_name}. Дисциплина на высоте! "
+                "Совет на следующую неделю: зафиксируйте этот темп и не усложняйте систему — регулярность важнее рекордов."
+            )
+        elif rate >= 35:
+            summary = (
+                f"Хорошая продуктивная неделя! Выполнено {done_cnt} привычек ({rate}% выполнения). "
+                f"Вы уверенно формируете свой ритм шаг за шагом. "
+                "Совет на следующую неделю: выберите одну главную привычку и сделайте её обязательным утренним якорем дня."
+            )
+        else:
+            summary = (
+                f"Неделя завершена, зафиксировано выполнений: {done_cnt}. "
+                "Помните: маленькие шаги складываются в большой результат — главное не бросать! "
+                "Совет на следующую неделю: снизьте планку до одного простого 2-минутного действия в день, чтобы вернуть серию."
+            )
 
     week_start = date.fromisoformat(payload["period"]["start"])
     week_end = date.fromisoformat(payload["period"]["end"])
@@ -571,7 +551,7 @@ async def generate_weekly_report(
 
             await send_telegram_message(
                 telegram_id,
-                f"Итоги твоей недели\n\n{summary}",
+                f"📊 Итоги твоей недели:\n\n{summary}",
             )
             delivered = True
             delivery_note = "Обзор также отправлен в Telegram."
